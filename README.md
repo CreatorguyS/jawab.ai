@@ -359,5 +359,5 @@ This project is licensed under the **MIT License** — see the [LICENSE](./LICEN
 ---
 
 <p align="center">
-  Built with ❤️ by <strong>Ashutosh</strong>
+  Built with ❤️ by <strong>Prince</strong>
 </p>
