@@ -80,7 +80,7 @@ export default function AppLayout() {
             ▶
           </span>
           <span className="hidden lg:block text-white font-bold text-base tracking-tight group-hover:translate-x-1 transition-transform">
-            ReplyPilot
+            Jawab.ai
           </span>
         </Link>
 

@@ -51,7 +51,7 @@ export default function LandingPage() {
         {/* Logo */}
         <div className="flex items-center gap-2 mb-8">
           <span className="text-[#ff4444] text-4xl">▶</span>
-          <span className="text-white text-3xl font-bold tracking-tight">ReplyPilot</span>
+          <span className="text-white text-3xl font-bold tracking-tight">Jawab.ai</span>
         </div>
 
         {/* Error banner */}

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🚀 ReplyPilot</h1>
+  <h1 align="center">🚀 Jawab.ai</h1>
   <p align="center">
     <strong>AI-Powered YouTube Comment Management Platform</strong>
   </p>
@@ -35,7 +35,7 @@
 
 ## 🏗️ Architecture
 
-ReplyPilot uses a **microservices architecture** with 5 independent services:
+Jawab.ai uses a **microservices architecture** with 5 independent services:
 
 ```
 ┌─────────────┐     ┌─────────────────┐     ┌──────────────────┐
@@ -117,8 +117,8 @@ flowchart LR
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/ashutosh2652/ReplyPilot.git
-cd ReplyPilot
+git clone https://github.com/CreatorguyS/jawab.ai.git
+cd jawab.ai
 ```
 
 ### 2. Environment Variables
@@ -218,7 +218,7 @@ uvicorn app.main:app --port 8001 --reload
 ## 📁 Project Structure
 
 ```
-ReplyPilot/
+jawab.ai/
 ├── client/                     # React + Vite Frontend
 │   ├── src/
 │   │   ├── api/                # Axios API modules (channel, comments, replies, personas)
