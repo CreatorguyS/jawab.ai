@@ -318,7 +318,7 @@ flowchart LR
 
 | Stage | Component | Detail |
 |-------|-----------|--------|
-| **1. SpamGatekeeper** | `SpamGatekeeper` class | Fast structural/pattern checks before running expensive ML. Uses **Shannon entropy** to detect keyboard smashes and random strings. Also handles non-English comments. |
+| **1. SpamGatekeeper** | `SpamGatekeeper` class | Fast 4-layer structural/pattern check before running expensive ML. Layers include O(1) quick rejections, regex matching, mathematical analysis (Shannon entropy), and stateful Redis bot-swarm detection. |
 | **2. ML Classifier** | `intent_classifier.py` | Fine-tuned HuggingFace `transformers` pipeline from local `model_files/`. Returns `IntentScore` with confidence. |
 | **3. Routing** | `_determine_routing()` | Routes based on classified intent: spam → discard; criticism → manual review; others → generate. |
 
@@ -658,9 +658,14 @@ ReplyPilot/
 Most AI auto-reply tools generate generic responses. Jawab.ai implements a **RAG Service** that pulls the actual transcript of your YouTube video, chunks it, embeds it via the `sentence-transformers` BAAI/bge model, and stores it in Pinecone. 
 * **Unique Implementation:** When generating a reply, the LLM searches the vector database for the specific moment in the video the user is commenting on, allowing the AI to reference exact quotes or context from the video. It also uses **Conditional Routing**—it skips RAG if the comment is non-English or the video transcript isn't indexed, saving compute costs and latency.
 
-### 9.2 Multi-Stage Spam Funnel (Shannon Entropy)
+### 9.2 Multi-Stage Spam Funnel (4-Layer SpamGatekeeper)
 Running deep learning models on every single comment is expensive and slow.
-* **Unique Implementation:** The `SpamGatekeeper` runs a fast mathematical check using **Shannon Entropy** to detect "keyboard smash" spam (e.g., *"asdasdfasd"*) and random strings. It drops these instantly without ever hitting the more expensive fine-tuned HuggingFace Machine Learning classifier, massively reducing inference costs and processing time.
+* **Unique Implementation:** The `SpamGatekeeper` implements a 4-layer short-circuit architecture to reject obvious spam in microseconds before it reaches the ML classifier:
+  1. **O(1) Quick Rejections**: Instantly drops too-short comments, zero-intent phrases, and AI prompt leakage.
+  2. **Regex Pattern Matching**: Catches URLs, repeating characters, emoji spam, and crypto/messaging keywords.
+  3. **Obfuscation Defeat & Math**: Analyzes vowel starvation and uses **Shannon Entropy** to detect "keyboard smash" spam (e.g., *"asdasdfasd"*).
+  4. **Stateful Bot-Swarm Detection**: Uses Redis `SET NX` to track recent duplicate comments on the same video, preventing bot swarms.
+This layered approach drops junk instantly, saving significant compute costs and processing time.
 
 ### 9.3 Highly Decoupled, Polyglot Architecture
 Instead of cramming everything into a monolithic Node.js or Python server, the project separates concerns strictly by language strength:
@@ -733,8 +738,8 @@ Using the open-source HuggingFace ecosystem prevents vendor lock-in with closed-
 **Q3: How exactly does your RAG implementation work?**
 * **Answer**: RAG (Retrieval-Augmented Generation) is used to give the LLM context. First, I have a background queue that ingests video transcripts. It cleans the text, chunks it into overlapping 60-second windows, embeds those chunks into vectors using a BAAI `sentence-transformer` model, and upserts them to Pinecone. When a user comments, the AI service embeds their comment into a vector, queries Pinecone for the most semantically similar transcript chunks, and injects that text into the LLM's prompt. This allows the AI to reference exact moments in the video rather than giving a generic reply.
 
-**Q4: Explain your Spam Detection logic and why it's built in two stages.**
-* **Answer**: Deep learning inference is expensive. Instead of sending every single piece of junk text to the LLM or classifier, I built a `SpamGatekeeper` that acts as a fast-path filter. It calculates the **Shannon Entropy** of the string. Normal English sentences have a predictable character frequency. Keyboard smashes (like "asdfasdf" or "qqqwww") have abnormally low entropy or chaotic consonant groupings. The gatekeeper instantly drops these, saving significant compute costs and keeping the main ML queue free for legitimate comments.
+**Q4: Explain your Spam Detection logic and why it's built in multiple stages.**
+* **Answer**: Deep learning inference is expensive. Instead of sending every single piece of junk text to the LLM or classifier, I built a `SpamGatekeeper` that acts as a fast-path filter with 4 distinct layers. It starts with cheap O(1) checks and regex patterns for obvious spam, then moves to mathematical analysis like **Shannon Entropy** for keyboard smashes, and finally uses Redis to detect stateful bot-swarms. This layered approach short-circuits as early as possible, instantly dropping junk and saving significant compute costs before the main ML queue is reached.
 
 **Q5: How are you securing the user's YouTube account credentials?**
 * **Answer**: When a user logs in via OAuth, Google provides a Refresh Token that allows long-term access to act on their behalf. Storing this in plain text is a massive security risk. I implemented a crypto utility that encrypts the refresh token using **AES-256-GCM** encryption before saving it to MongoDB. The decryption key exists only in environment variables. When the backend needs to post a reply, it decrypts the token in memory, fetches a fresh 1-hour access token, and immediately discards the refresh token from memory.
