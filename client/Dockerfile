@@ -1,36 +1,31 @@
 # =============================================================================
-# client/Dockerfile — Multi-stage: Vite build → Nginx
+# client/Dockerfile — Production Vite SPA Runner for Railway
 # =============================================================================
-
-# ── Stage 1: Build the React app ─────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Accept VITE_ build args (baked into bundle at compile time)
-ARG VITE_API_URL=http://localhost:5000
+# Baked build-time arguments for Vite
+ARG VITE_API_URL=https://server-production-3223ebce.up.railway.app
 ENV VITE_API_URL=$VITE_API_URL
 
-# Install dependencies first (better layer caching)
 COPY package*.json ./
 RUN npm ci
 
-# Copy source and build
 COPY . .
 RUN npm run build
 
-# ── Stage 2: Serve with Nginx ─────────────────────────────────────────────────
-FROM nginx:1.27-alpine AS runtime
+# ── Production Runner ────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+WORKDIR /app
 
-# Remove default nginx content
-RUN rm -rf /usr/share/nginx/html/*
+COPY package*.json ./
+RUN npm ci --only=production
 
-# Copy built assets from Stage 1
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/dist ./dist
 
-# Copy custom Nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV NODE_ENV=production
+ENV PORT=3000
+EXPOSE 3000
 
-EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["npx", "serve", "-s", "dist", "-l", "3000"]
