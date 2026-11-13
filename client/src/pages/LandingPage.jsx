@@ -49,8 +49,12 @@ export default function LandingPage() {
       <div className="relative z-10 flex flex-col items-center text-center max-w-md">
 
         {/* Logo */}
-        <div className="flex items-center gap-2 mb-8">
-          <span className="text-[#ff4444] text-4xl">▶</span>
+        <div className="flex items-center gap-3 mb-8">
+          <img 
+            src="/favicon.svg" 
+            alt="Jawab.ai" 
+            className="w-10 h-10 object-contain hover:scale-110 transition-transform duration-300"
+          />
           <span className="text-white text-3xl font-bold tracking-tight">Jawab.ai</span>
         </div>
 

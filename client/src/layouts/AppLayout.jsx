@@ -76,9 +76,11 @@ export default function AppLayout() {
           to="/dashboard" 
           className="flex items-center gap-3 px-5 py-6 border-b border-[#30363d] group cursor-pointer hover:bg-[#1c2128] transition-all"
         >
-          <span className="text-[#ff4444] text-2xl font-bold group-hover:rotate-[360deg] transition-transform duration-500">
-            ▶
-          </span>
+          <img 
+            src="/favicon.svg" 
+            alt="Jawab.ai" 
+            className="w-7 h-7 object-contain group-hover:scale-110 group-hover:rotate-12 transition-transform duration-300"
+          />
           <span className="hidden lg:block text-white font-bold text-base tracking-tight group-hover:translate-x-1 transition-transform">
             Jawab.ai
           </span>
