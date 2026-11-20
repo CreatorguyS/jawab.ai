@@ -68,11 +68,24 @@ export async function getValidYoutubeToken(userId) {
         logger.debug("Access Token refreshed for user:", userId);
         resolve(newAccessToken);
       })
-      .catch(reject);
+      .catch((refreshError) => {
+        const msg = refreshError.message || "";
+        if (msg.includes("invalid_grant") || msg.includes("Token has been expired or revoked")) {
+          const err = new Error(`YouTube token invalid for user ${userId} - re-authentication required (${msg})`);
+          err.reAuthNeeded = true;
+          reject(err);
+        } else {
+          reject(refreshError);
+        }
+      });
   });
 
   ongoingRefreshPromises.set(userId, refreshPromise);
-  refreshPromise.finally(() => ongoingRefreshPromises.delete(userId));
+  refreshPromise
+    .catch((err) => {
+      logger.debug(`Background refresh promise rejected for user ${userId}: ${err.message}`);
+    })
+    .finally(() => ongoingRefreshPromises.delete(userId));
 
   return await refreshPromise;
 }

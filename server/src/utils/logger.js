@@ -37,6 +37,7 @@ const errorRotateTransport = new DailyRotateFile({
 
 const logger = winston.createLogger({
   level: isProduction ? "info" : "debug",
+  exitOnError: false,
 
   format: combine(
     timestamp(),

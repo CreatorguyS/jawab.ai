@@ -41,6 +41,14 @@ async function startServer() {
     }
 }
 
+process.on("unhandledRejection", (reason) => {
+    console.error("[Global Safety] Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+    console.error("[Global Safety] Uncaught Exception:", error);
+});
+
 startServer();
 
 ["SIGTERM", "SIGINT"].forEach((sig) =>
