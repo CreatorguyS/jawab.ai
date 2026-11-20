@@ -3,6 +3,7 @@ import redis, { keys } from "../config/redis.js";
 import User from "../models/User.models.js";
 import { env } from "../config/env.js";
 import logger from "./logger.js";
+import { decrypt } from "./crypto.js";
 
 // "Memory Board" to prevent race conditions during refresh
 const ongoingRefreshPromises = new Map(); 
@@ -47,7 +48,8 @@ export async function getValidYoutubeToken(userId) {
         env.GOOGLE_CLIENT_ID,
         env.GOOGLE_CLIENT_SECRET
     );
-    oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+    const decryptedToken = decrypt(user.refreshToken);
+    oauth2Client.setCredentials({ refresh_token: decryptedToken });
 
     // 4. We are Request #1 (the leader). Register the IOU note BEFORE the async
     //    work begins so any concurrent caller that reaches the has() check above

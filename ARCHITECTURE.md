@@ -757,3 +757,181 @@ By short-circuiting at the earliest possible failure point, the system handles m
 
 **Q8: Why did you choose BullMQ and a separate worker process for background jobs instead of processing them directly in the Express server?**
 * **Answer**: Heavy ML inference and third-party API calls (like YouTube or HuggingFace) can take several seconds and fail unpredictably. If these were processed directly in Express, they would block the Node.js event loop and cause HTTP requests to timeout. By decoupling this logic into a standalone BullMQ Worker process, the Express API remains highly responsive. Furthermore, BullMQ provides job persistence, concurrency controls (e.g., 5 jobs per worker), and exponential backoff retries out of the box, ensuring that intermittent network failures do not result in data loss. This architecture also allows the API and the background workers to scale independently based on their unique resource demands.
+
+---
+
+## 12. Detailed Data Models and HLD-LLD API Interaction
+
+This section details every MongoDB model (the Low-Level Data Design) and explains how the High-Level Design (HLD) components interact with these models via APIs.
+
+### 12.1 Detailed Model Explanations (Low-Level Design)
+
+The system uses 7 core Mongoose models to represent the database schema:
+
+1. **User (`User.models.js`)**
+   - **Purpose:** Represents an authenticated user (channel owner) who logs into the platform.
+   - **Key Fields:** `googleId` (unique identifier from Google), `email`, `displayName`, `avatar`, `refreshToken` (encrypted, for background YouTube API access), and `channelId` (the user's primary synced YouTube channel).
+
+2. **Channel (`Channel.models.js`)**
+   - **Purpose:** Stores the metadata of a YouTube channel synced by the User.
+   - **Key Fields:** `channelId` (YouTube's channel ID), `userId` (reference to the User who owns it), `title`, `description`, `thumbnail` (resolutions), and statistical metrics (`subscriberCount`, `videoCount`, `viewCount`). Tracks sync state via `lastSyncedAt`.
+
+3. **Video (`Video.models.js`)**
+   - **Purpose:** Represents a YouTube video belonging to a Channel. Used to group comments and for RAG context.
+   - **Key Fields:** `videoId` (YouTube's video ID), `channelId`, `userId` (owner), `title`, `description`, `publishedAt`, `thumbnail`, and metrics (`viewCount`, `likeCount`, `commentCount`).
+
+4. **Comment (`Comment.models.js`)**
+   - **Purpose:** Stores individual comments fetched from YouTube videos. Acts as the primary trigger for the AI pipeline.
+   - **Key Fields:** `ytCommentId`, `videoId`, `channelId`, `text` (raw text), `authorName`, `isReply`, `parentId`. 
+   - **AI/ML Fields:** `intents` (array of detected intents like question, praise, spam with confidence scores), `isSpam` (boolean), `classificationStatus` (tracks state in worker: pending, processing, done, failed).
+
+5. **Reply (`Reply.models.js`)**
+   - **Purpose:** Stores the AI-generated reply for a specific Comment, managing its state before and after publishing to YouTube.
+   - **Key Fields:** `commentId` (reference to Comment), `ytCommentId`, `personaId` (reference to the persona used), `generatedText` (raw AI output), `editedText` (user's manual edits), `finalText` (what actually gets published).
+   - **Lifecycle Fields:** `status` (pending_review, approved, rejected, publishing, published, failed), `ytReplyId` (populated after successful YouTube API post).
+
+6. **Persona (`Persona.models.js`)**
+   - **Purpose:** Defines the tone and context the AI should adopt when replying on behalf of the User.
+   - **Key Fields:** `userId` (owner), `name`, `creatorBio` (background info for the LLM), `icon`, and `isDefault`.
+
+7. **VideoExample (`VideoExample.models.js`)** *(Recently Added)*
+   - **Purpose:** Stores few-shot examples (comment + reply + tone + intent scores) for a specific video. Used by the AI to learn how a creator typically responds to certain types of comments on specific videos.
+   - **Key Fields:** `videoId`, `commentText`, `replyText`, `tone`, `scores` (question, praise, critism, neutral, spam).
+
+---
+
+### 12.2 HLD Interaction with LLD via APIs
+
+The High-Level Architecture (Client -> Express API -> BullMQ -> Python AI Services) maps directly to the Low-Level Data Models through well-defined APIs.
+
+#### 1. Data Ingestion (YouTube API -> Node Server -> MongoDB)
+- **HLD Flow:** A Cron Job or manual Client trigger hits the Express Server to sync data.
+- **LLD Interaction:** The `Channel.service.js` fetches data from YouTube and performs bulk upserts on `Channel`, `Video`, and `Comment` models.
+- **Queue Interaction:** After saving new `Comment` documents, the server pushes their ObjectIds to the Redis `classify` queue.
+
+#### 2. Intent Classification (BullMQ Worker <-> AI Service <-> MongoDB)
+- **HLD Flow:** The Node.js Worker pulls a job from the `classify` queue and makes an HTTP POST to the Python AI Service (`/api/v1/classify`).
+- **LLD Interaction:** 
+  1. Worker fetches the `Comment` via its `_id`.
+  2. Passes the `text` to the AI Service API.
+  3. AI Service returns classification results (intent, spam score).
+  4. Worker performs a `findOneAndUpdate` on the `Comment` model to update the `intents` array, `isSpam` flag, and `classificationStatus` to `done`.
+  5. If the intent requires a reply (e.g., question, praise), the Worker pushes the `Comment` ID to the `generate` queue.
+
+#### 3. Reply Generation & Context (Worker <-> AI Service <-> RAG Service <-> MongoDB)
+- **HLD Flow:** The Worker pulls from the `generate` queue and calls the AI Service (`/api/v1/generate`). The AI service conditionally calls the RAG service (`/api/v1/query`) for video transcript context.
+- **LLD Interaction:**
+  1. Worker fetches the `Comment`, its parent `Video`, and the user's default `Persona`.
+  2. Worker can optionally fetch `VideoExample` documents for the specific `videoId` to provide few-shot prompting context to the LLM.
+  3. Worker sends all this LLD context to the AI Service API as a JSON payload.
+  4. The AI returns the `generatedText`.
+  5. Worker creates a new `Reply` document linked to the `Comment`, with `status: "pending_review"`.
+
+#### 4. User Review & Approval (Client <-> Node API <-> MongoDB)
+- **HLD Flow:** The user views drafts on the frontend React Client. They can edit or approve a draft via a REST API call to the Node Server.
+- **LLD Interaction:** 
+  - **Endpoint:** `PATCH /api/replies/:id`
+  - Updates the `Reply` model. Sets `editedText` if the user changed it, sets `finalText`, and changes `status` to `approved`.
+  - The API then enqueues a `post-reply` job in Redis.
+
+#### 5. Publishing (Worker <-> YouTube API <-> MongoDB)
+- **HLD Flow:** The Worker picks up the `post-reply` job, decrypts the user's YouTube token, and pushes the reply to YouTube.
+- **LLD Interaction:**
+  1. Worker fetches the `Reply` and populated `User` model.
+  2. Uses the `User`'s decrypted `refreshToken` to authenticate with YouTube.
+  3. Posts `finalText` to YouTube using the original `Comment`'s `ytCommentId`.
+  4. Updates the `Reply` model: `status` becomes `published`, and `ytReplyId` is saved. This is an atomic update to prevent duplicate publishing.
+
+---
+
+## 13. Complete API Endpoint Design & Usage
+
+This section details every API endpoint exposed by the Express.js Backend and Python AI/RAG Services, along with their primary use case and role in the system.
+
+### 13.1 Authentication & User Routes (`/api/auth`)
+*Used primarily by the Client to establish secure sessions and fetch user profiles.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **GET** | `/api/auth/google` | Initiates the Google OAuth 2.0 consent screen with YouTube API scopes. |
+| **GET** | `/api/auth/google/callback` | Google redirects here with an authorization code. Express exchanges this for access/refresh tokens and establishes a Redis-backed session for the user. |
+| **GET** | `/api/auth/user` | Fetches the currently authenticated user's profile data to hydrate the React frontend state. |
+| **POST**| `/api/auth/logout` | Destroys the Redis session and clears the browser cookies, safely logging the user out. |
+
+### 13.2 Channel & Video Routes (`/api/channel`)
+*Used to sync and retrieve core YouTube metadata.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **GET** | `/api/channel/` | Returns the user's connected YouTube channel details (subscribers, views, name). |
+| **GET** | `/api/channel/videos` | Lists all videos belonging to the synced channel. |
+| **GET** | `/api/channel/videos/:videoId` | Fetches deep metadata for a specific video. |
+| **GET** | `/api/channel/videos/:videoId/comments` | Retrieves all comments specifically attached to a given video. |
+| **POST**| `/api/channel/videos/:videoId/comments/sync` | Manually forces the backend to call the YouTube API and sync the latest comments for a specific video right now (bypassing the 30-min cron). |
+
+### 13.3 Persona Routes (`/api/personas`)
+*Used to manage the AI "Voices" the creator wants to adopt.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **POST**| `/api/personas/` | Creates a new persona profile (name, bio, tone) for the user. |
+| **GET** | `/api/personas/` | Lists all personas available to the user so they can select one in the UI. |
+| **POST**| `/api/personas/analyze` | AI-assisted feature: Sends sample text to the AI Service to suggest the best matching tone for a new persona. |
+| **GET** | `/api/personas/:id` | Retrieves configuration details for a specific persona. |
+| **PUT** | `/api/personas/:id` | Updates an existing persona's settings (e.g., tweaking the bio for better LLM context). |
+| **DELETE**| `/api/personas/:id` | Deletes a persona profile. |
+
+### 13.4 Comments Routes (`/api/comments`)
+*Used to view and manage incoming audience comments.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **GET** | `/api/comments/` | Lists all comments across all videos with pagination. Often used with filters (e.g., "show me all 'question' comments"). |
+| **GET** | `/api/comments/search` | Full-text search across the user's synced comments. |
+| **GET** | `/api/comments/:id` | Fetches a single comment's details (including its intent scores). |
+| **PATCH**| `/api/comments/:id/intent` | Allows a human to manually override the AI's classification if it made a mistake (e.g., changing 'spam' to 'praise'). |
+| **POST**| `/api/comments/:id/classify` | Pushes a specific comment back into the BullMQ `classify` queue for the AI to re-evaluate it. |
+
+### 13.5 Reply Routes (`/api/replies`)
+*Used to manage the lifecycle of AI-generated responses before they hit YouTube.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **GET** | `/api/replies/` | Lists all replies, usually filtered by status (e.g., viewing all `pending_review` drafts). |
+| **POST**| `/api/replies/generate/:id` | Pushes a specific comment to the BullMQ `generate` queue so the AI creates a draft reply for it. |
+| **PUT** | `/api/replies/batch/publish` | Approves and publishes multiple selected replies at once (bulk action). |
+| **POST**| `/api/replies/manual/:commentId` | Allows the user to type a manual reply and bypass the AI generation completely. |
+| **GET** | `/api/replies/:id` | Fetches a specific draft reply. |
+| **DELETE**| `/api/replies/:id` | Deletes a draft reply. |
+| **PUT** | `/api/replies/:replyId/edit` | Saves user edits made to an AI-generated draft before approval. |
+| **PUT** | `/api/replies/:replyId/approve` | Marks a draft as `approved`, queuing it to be published to YouTube asynchronously. |
+| **PUT** | `/api/replies/:replyId/reject` | Rejects a draft if it is unsatisfactory. |
+| **PUT** | `/api/replies/:replyId/publish` | Immediately triggers the BullMQ worker to post the approved reply to YouTube right now. |
+| **POST**| `/api/replies/:replyId/regenerate` | Discards the current draft and asks the AI to write a completely new one for the same comment. |
+
+### 13.6 Batch Operations Routes (`/api/batch`)
+*Used for scaling operations across thousands of comments.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **POST**| `/api/batch/` | Enqueues bulk jobs (e.g., "classify all 500 comments on this video" or "generate replies for all 'praise' comments"). |
+| **GET** | `/api/batch/:jobId` | Polls the status of a long-running batch job to show progress bars in the UI. |
+
+### 13.7 Python AI Service Routes (`FastAPI: 8000`)
+*Internal microservice endpoints called by the Node.js Workers, never exposed to the public internet.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **POST**| `/api/v1/classify` | Receives raw comment text. Runs it through the SpamGatekeeper and ML Model. Returns `{intent, confidence, spam_flag}`. |
+| **POST**| `/api/v1/classify/batch` | Same as above, optimized for a batch array of comments. |
+| **POST**| `/api/v1/generate` | Receives comment text, persona bio, and tone. Prompts the Gemma LLM (conditionally querying RAG) and returns the drafted string. |
+| **POST**| `/api/v1/generate/batch` | Same as above, optimized for a batch array of generation requests. |
+
+### 13.8 Python RAG Service Routes (`FastAPI: 8001`)
+*Internal microservice for vector embedding and retrieval.*
+
+| Method | Endpoint | Use Case / Design Purpose |
+|--------|----------|---------------------------|
+| **POST**| `/api/v1/ingest` | Pushes a YouTube video transcript to the internal BRPOP queue for background chunking, embedding, and Pinecone upserting. |
+| **POST**| `/api/v1/query` | Receives a comment's text and searches Pinecone for the most semantically relevant transcript chunks to provide context to the LLM. |
+| **GET** | `/health/ready` | Readiness probe that checks Redis and Pinecone connectivity before accepting traffic. |

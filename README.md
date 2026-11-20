@@ -79,6 +79,16 @@ flowchart LR
     G -->|user approves| H["Post to YouTube"]
 ```
 
+### Why Do We Store Transcripts?
+
+We store and index video transcripts to power the **RAG (Retrieval-Augmented Generation)** system. By embedding the video's transcript into a Pinecone vector database, the LLM (Gemma-4-31B-it) can understand the exact context of the video the comment was posted on. This ensures that the generated AI replies are highly relevant and specific to the video's actual content, rather than just generic responses.
+
+### What Schedulers Are Used?
+
+Jawab.ai relies on two scheduling systems to manage background workloads:
+1. **BullMQ (Redis-backed)**: Used as the primary background job queue. It orchestrates complex, retry-able tasks like classifying comment intent, generating LLM replies, posting replies to YouTube, and async RAG transcript ingestion.
+2. **node-cron**: Used in the backend Express server for time-based scheduling. It is primarily responsible for triggering the automatic YouTube comment sync jobs every 30 minutes.
+
 ---
 
 ## 🛠️ Tech Stack
